@@ -1,129 +1,182 @@
-name: Issue to PR with Codex
+name: Issue to PR via Codex
 
 on:
   issues:
-    types: [labeled]
+    types:
+      - opened
+      - labeled
+
+concurrency:
+  group: codex-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  fix_with_codex:
+  resolve:
+    if: ${{ contains(github.event.issue.labels.*.name, 'codex') }}
     runs-on: ubuntu-latest
-    if: github.event.label.name == 'codex'
-
     permissions:
       contents: write
       pull-requests: write
-      actions: write
-
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-
+      issues: write
     steps:
-      - name: Checkout repository
+      - name: チェックアウト
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set git user
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Ensure required secrets are configured
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "::error::OPENAI_API_KEY is not configured"; exit 1
-          fi
-
-      - name: Setup Node.js
+      - name: Node.js のセットアップ
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '20'
 
-      - name: Install Codex CLI
+      - name: Codex CLI のインストール
         run: npm install -g @openai/codex
 
-      # ★ Codex CLI の状態をリセット
-      - name: Reset Codex local state
-        shell: bash
+      - name: Git 設定
         run: |
-          codex logout || true
-          rm -rf ~/.codex || true
+          git config user.name "codex-bot"
+          git config user.email "codex-bot@users.noreply.github.com"
 
-      - name: Generate patch with Codex
-        id: codex_patch
+      - name: Codex にログイン
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "OPENAI_API_KEY が設定されていません" >&2
+            exit 1
+          fi
+          codex login --api-key "${OPENAI_API_KEY}"
+
+      - name: Codex で修正案を生成
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euxo pipefail
+          BRANCH="codex/issue-${ISSUE_NUMBER}"
+          git checkout -b "${BRANCH}"
+
+          cat <<'PROMPT' > codex-prompt-template.md
+You are part of an automated workflow that fixes GitHub Issue #${ISSUE_NUMBER} in this Next.js task manager project.
+
+Repository notes:
+- The project uses npm scripts: npm run dev, npm run lint, npm run build.
+- Only modify files relevant to the issue. Keep changes minimal and well-structured.
+- Update or add tests and type definitions when necessary.
+
+Task details (provided by the issue author):
+Title: ${ISSUE_TITLE}
+Body:
+${ISSUE_BODY}
+
+Instructions:
+1. Understand the issue and propose precise code changes that resolve it.
+2. Apply changes directly in the repository without creating commits.
+3. Run any essential checks mentioned in the Issue (e.g. npm run lint / npm run build) when feasible.
+4. Finish by printing a short summary and list of checks you ran.
+PROMPT
+
+          envsubst < codex-prompt-template.md > codex-prompt.md
+          rm codex-prompt-template.md
+
+          codex exec --full-auto -C . - < codex-prompt.md
+
+      - name: コミット作成
+        id: commit
+        env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        shell: bash
         run: |
           set -euo pipefail
-
-          BRANCH="codex/issue-${ISSUE_NUMBER}"
-          git switch -c "$BRANCH"
-
-          PROMPT="$(printf '%s\n\n%s\n%s\n' \
-            "$ISSUE_TITLE" \
-            "$ISSUE_BODY" \
-            "最後に \`npm ci && npm run build\` を実行してエラーが出ないことを確認してください。'.git' などドットで始まるファイル/フォルダは絶対に変更しないでください。")"
-
-          # ★ モデルを強制的に o4-mini に設定
-          codex config set model o4-mini
-
-          codex exec \
-            --full-auto \
-            --color never \
-            --output-last-message codex-last.txt \
-            "$PROMPT"
-
-          echo "----- Codex banner (should show model: o4-mini) -----"
-          head -n 12 codex-last.txt || true
-          echo "---------------------------------------------------"
-
-          if [[ -z "$(git status --porcelain)" ]]; then
-            echo "::notice::Codex did not produce any changes; skipping push and PR creation."
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "has_changes=true" >> "$GITHUB_OUTPUT"
           git add -A
-          git commit -m "Fix: #${ISSUE_NUMBER} - ${ISSUE_TITLE}"
-          git push -u origin "$BRANCH"
+          git commit -m "Codex: Resolve issue #${ISSUE_NUMBER}"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Create Pull Request
-        if: steps.codex_patch.outputs.has_changes == 'true'
+      - name: ブランチをプッシュ
+        if: ${{ steps.commit.outputs.skip != 'true' }}
         env:
-          ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
-        shell: bash
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.PAT_TOKEN != '' && secrets.PAT_TOKEN || github.token }}
         run: |
           set -euo pipefail
-
           BRANCH="codex/issue-${ISSUE_NUMBER}"
-          TITLE="Fix: #${ISSUE_NUMBER} – ${ISSUE_TITLE}"
-          BODY="Automated fix generated by Codex CLI."
+          git push "https://${TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}" --force-with-lease
 
-          if [ -n "${PAT_TOKEN:-}" ]; then
-            export GH_TOKEN="$PAT_TOKEN"
-          else
-            export GH_TOKEN="$DEFAULT_GITHUB_TOKEN"
-          fi
+      - name: Pull Request 作成
+        if: ${{ steps.commit.outputs.skip != 'true' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN != '' && secrets.PAT_TOKEN || github.token }}
+          script: |
+            const issue = context.payload.issue;
+            const branch = `codex/issue-${issue.number}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const base = context.payload.repository.default_branch;
 
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${GITHUB_REPOSITORY}/pulls" \
-            -f title="$TITLE" \
-            -f head="$BRANCH" \
-            -f base="main" \
-            -f body="$BODY" \
-            >/tmp/pr-response.json
+            const existing = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${owner}:${branch}`,
+              state: 'open'
+            });
 
-          PR_URL=$(jq -r '.html_url // empty' /tmp/pr-response.json)
-          if [ -n "$PR_URL" ]; then
-            echo "::notice::Pull request created: $PR_URL"
-          fi
+            if (existing.data.length > 0) {
+              core.setOutput('pr_url', existing.data[0].html_url);
+              return;
+            }
+
+            const title = `[Codex] ${issue.title}`;
+            const body = `自動生成された修正です。\n\n- 対象 Issue: #${issue.number}\n- この PR は Codex CLI により作成されました。\n\nCloses #${issue.number}`;
+
+            const pr = await github.rest.pulls.create({
+              owner,
+              repo,
+              title,
+              head: branch,
+              base,
+              body
+            });
+
+            core.setOutput('pr_url', pr.data.html_url);
+
+      - name: Issue に結果をコメント
+        if: ${{ steps.commit.outputs.skip != 'true' }}
+        uses: actions/github-script@v7
+        env:
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        with:
+          github-token: ${{ secrets.PAT_TOKEN != '' && secrets.PAT_TOKEN || github.token }}
+          script: |
+            const issue = context.payload.issue;
+            const prUrl = process.env.PR_URL;
+            const message = prUrl
+              ? `Codex により自動生成された PR が作成されました: ${prUrl}`
+              : 'Codex により PR が更新されました。';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: message
+            });
+
+      - name: 変更なし時のコメント
+        if: ${{ steps.commit.outputs.skip == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN != '' && secrets.PAT_TOKEN || github.token }}
+          script: |
+            const issue = context.payload.issue;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: 'Codex は実施しましたが変更は不要と判断されました。Issue 内容をご確認ください。'
+            });

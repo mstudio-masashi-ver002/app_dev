@@ -15,12 +15,13 @@ npm run dev
 このリポジトリには、GitHub Actions と OpenAI Codex CLI を組み合わせた自動化ワークフローを用意しています。ポイントは次の 2 つです。
 
 - `.github/workflows/issue-to-pr.yaml`
-  - Issue に `codex` ラベルが付くと起動。
-  - 新しいブランチを作成し、Issue タイトル・本文をプロンプト化して Codex CLI に渡します。
-  - Codex が生成した修正をコミットしてプッシュし、PR を自動作成します。
+  - Issue に `codex` ラベルが付くと起動します。
+  - ブランチ `codex/issue-<Issue番号>` を切り、Issue タイトル・本文をプロンプト化して Codex CLI (`codex exec --full-auto`) に渡します。
+  - Codex が生成した修正をコミットしてプッシュし、必要なら既存 PR を更新、存在しなければ新規 PR を自動作成します。
+  - 実行結果は Issue にコメントされるため、人手でのフォローも容易です。
 - `.github/workflows/pr-summary.yaml`
-  - PR がオープンしたタイミングで起動。
-  - 差分を抽出して Codex CLI に要約させ、結果を `codex-summary.md` として PR コメントに投稿します。
+  - PR がオープン・更新されたタイミングで起動します。
+  - 差分と変更統計を抽出して Codex CLI に要約させ、結果を `codex-summary.md` として保存し、PR に固定コメント（`<!-- codex-summary -->` 目印）を作成・更新します。
 
 ### 事前準備
 

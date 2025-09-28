@@ -1,58 +1,187 @@
-name: PR summary by codex
+name: Codex PR Summary
 
 on:
-  pull_request_target:
-    types: [opened]
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 jobs:
-  pr-summary-by-codex:
+  summarize:
     runs-on: ubuntu-latest
-
     permissions:
-      contents: read
       pull-requests: write
-
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
+      contents: read
     steps:
-      - name: Checkout head commit
+      - name: チェックアウト
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
-      - name: Ensure OPENAI_API_KEY is configured
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "::error::OPENAI_API_KEY secret is not configured. Add it in repository settings to enable Codex summaries." >&2
-            exit 1
-          fi
-
-      - name: Setup Node.js
+      - name: Node.js のセットアップ
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '20'
 
-      - name: Generate summary and comment
+      - name: Codex CLI のインストール
+        run: npm install -g @openai/codex
+
+      - name: Codex にログイン
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_NUMBER: ${{ github.event.number }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "OPENAI_API_KEY が設定されていません" >&2
+            exit 1
+          fi
+          codex login --api-key "${OPENAI_API_KEY}"
+
+      - name: 差分の準備
         shell: bash
         run: |
           set -euo pipefail
+          BASE_REF='${{ github.event.pull_request.base.ref }}'
+          git fetch origin "${BASE_REF}" --depth=0
+          git diff --no-color --stat origin/"${BASE_REF}"...HEAD > codex-diff.stat
+          git diff --no-color origin/"${BASE_REF}"...HEAD > codex-diff.patch
 
-          npm install -g @openai/codex
+      - name: Codex で要約を生成
+        id: summary
+        env:
+          PR_TITLE_RAW: ${{ github.event.pull_request.title }}
+          PR_BODY_RAW: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s codex-diff.patch ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          # 変更差分をファイル化
-          gh pr diff "$PR_NUMBER" > pr-diff.txt
+          python3 - <<'PY'
+import os
+from pathlib import Path
+import textwrap
 
-          # Codexで日本語サマリを作成（ヒアドキュメントを使わず、素直に引数で渡す）
-          codex exec --full-auto -m o4-mini --color never \
-            --output-last-message codex-summary.md \
-            "次のファイル pr-diff.txt を読み、技術的変更点を日本語でMarkdown要約してください。\n- 目的/背景（推測可）\n- 主な変更点の箇条書き（ファイル/関数/設定）\n- 破壊的変更や注意点（あれば）\n- 確認手順（lint/build/test）\n出力は1つのMarkdownとして出力し、余計な前置きは不要です。"
+title = (os.environ.get('PR_TITLE_RAW') or '').strip()
+body = os.environ.get('PR_BODY_RAW') or ''
+stat_path = Path('codex-diff.stat')
+diff_path = Path('codex-diff.patch')
+stat = stat_path.read_text().strip() if stat_path.exists() else ''
+diff = diff_path.read_text()
 
-          # PRにコメント投稿
-          gh pr comment --body-file codex-summary.md "$PR_URL"
+max_chars = 120000
+truncated = False
+if len(diff) > max_chars:
+    diff = diff[:max_chars]
+    truncated = True
+
+note = ''
+if truncated:
+    note = f"\n\n[Diff は先頭 {max_chars} 文字までに切り詰められています]"
+
+prompt = textwrap.dedent(f"""You are assisting with a pull request review. Summarize the key changes introduced by the diff provided below.
+
+Requirements:
+- Write the summary in Japanese using short bullet points.
+- リスクやフォローアップが必要な点があれば必ず挙げてください。
+- Include any tests mentioned in the diff or obvious follow-up checks that reviewers should run.
+- If the diff is too large to summarize safely, state that instead of guessing.
+
+Pull Request title: {title}
+Pull Request description:
+{body}
+
+Diff stats:
+{stat}{note}
+
+Diff to summarize:
+```diff
+{diff}
+```
+""")
+
+Path('codex-summary-prompt.md').write_text(prompt)
+PY
+
+          codex exec --full-auto -C . --output-last-message codex-summary.md - < codex-summary-prompt.md
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+
+      - name: PR へ要約コメント
+        if: ${{ steps.summary.outputs.empty != 'true' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- codex-summary -->';
+            const body = fs.readFileSync('codex-summary.md', 'utf8').trim();
+
+            if (!body) {
+              core.info('Codex summary is empty; skipping comment.');
+              return;
+            }
+
+            const finalBody = `${marker}\n${body}`;
+            const prNumber = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+
+            const existing = comments.find(comment => comment.body && comment.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: finalBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: finalBody
+              });
+            }
+
+      - name: 差分なしコメント
+        if: ${{ steps.summary.outputs.empty == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const marker = '<!-- codex-summary -->';
+            const prNumber = context.payload.pull_request.number;
+            const message = `${marker}\n差分が存在しないため、Codex 要約は省略されました。`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+
+            const existing = comments.find(comment => comment.body && comment.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: message
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: message
+              });
+            }
