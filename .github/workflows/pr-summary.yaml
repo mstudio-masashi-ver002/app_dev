@@ -52,12 +52,7 @@ jobs:
           # Codexで日本語サマリを作成（ヒアドキュメントを使わず、素直に引数で渡す）
           codex exec --full-auto -m o4-mini --color never \
             --output-last-message codex-summary.md \
-            "次のファイル pr-diff.txt を読み、技術的変更点を日本語でMarkdown要約してください。
-            - 目的/背景（推測可）
-            - 主な変更点の箇条書き（ファイル/関数/設定）
-            - 破壊的変更や注意点（あれば）
-            - 確認手順（lint/build/test）
-            出力は1つのMarkdownとして出力し、余計な前置きは不要です。"
+            "次のファイル pr-diff.txt を読み、技術的変更点を日本語でMarkdown要約してください。\n- 目的/背景（推測可）\n- 主な変更点の箇条書き（ファイル/関数/設定）\n- 破壊的変更や注意点（あれば）\n- 確認手順（lint/build/test）\n出力は1つのMarkdownとして出力し、余計な前置きは不要です。"
 
           # PRにコメント投稿
           gh pr comment --body-file codex-summary.md "$PR_URL"
