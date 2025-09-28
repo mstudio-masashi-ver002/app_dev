@@ -52,7 +52,7 @@ jobs:
             "最後に\`npm ci && npm run build\`を実行してエラーが出ないことを確認してください。 .gitのような'.'から始まるファイル、フォルダの中身は絶対に変更しないでください。"
           )"
 
-          codex -a full-auto --quiet "$PROMPT"
+          codex exec --full-auto --color never "$PROMPT"
 
           if [[ -n $(git status --porcelain) ]]; then
             git add .

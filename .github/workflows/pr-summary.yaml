@@ -34,7 +34,11 @@ jobs:
 
           gh pr diff "$PR_NUMBER" > pr-diff.txt
 
-          codex -m o4-mini -a auto-edit --quiet \
-            "pr-diff.txt から更新差分を日本語で要約して。変更があったファイルの内容を確認して。プルリクエストとして要約内容をcodex-summary.md に保存して。"
+          PROMPT="$(cat <<'PROMPT_EOF'
+プルリクエストの差分は `pr-diff.txt` に保存されています。このファイルを確認し、変更点を日本語で簡潔に要約してください。重要なポイントを箇条書きにし、必要に応じて確認事項やリスクがあれば最後に追記してください。結果は Markdown 形式で 80 文字程度を目安に改行し、最終メッセージでは要約のみを出力してください。
+PROMPT_EOF
+          )"
+
+          codex exec --full-auto -m o4-mini --color never --output-last-message codex-summary.md "$PROMPT"
 
           gh pr comment --body-file codex-summary.md "$PR_URL"
