@@ -44,7 +44,7 @@ jobs:
       - name: Install Codex CLI
         run: npm install -g @openai/codex
 
-      # ★ ここでCLIの保存状態を必ず無効化（既定モデルの持ち越しを防ぐ）
+      # ★ Codex CLI の状態をリセット
       - name: Reset Codex local state
         shell: bash
         run: |
@@ -69,17 +69,18 @@ jobs:
             "$ISSUE_BODY" \
             "最後に \`npm ci && npm run build\` を実行してエラーが出ないことを確認してください。'.git' などドットで始まるファイル/フォルダは絶対に変更しないでください。")"
 
-          # ★ モデルを強制、非対話、色なし、最終メッセージ保存
+          # ★ モデルを強制的に o4-mini に設定
+          codex config set model o4-mini
+
           codex exec \
             --full-auto \
             --color never \
-            -c model="o4-mini" \
             --output-last-message codex-last.txt \
             "$PROMPT"
 
-          echo "----- Codex banner (model should be o4-mini) -----"
-          sed -n '1,12p' codex-last.txt || true
-          echo "--------------------------------------------------"
+          echo "----- Codex banner (should show model: o4-mini) -----"
+          head -n 12 codex-last.txt || true
+          echo "---------------------------------------------------"
 
           if [[ -z "$(git status --porcelain)" ]]; then
             echo "::notice::Codex did not produce any changes; skipping push and PR creation."
