@@ -12,11 +12,24 @@ jobs:
       contents: read
       pull-requests: write
 
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
     steps:
       - name: Checkout head commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Ensure OPENAI_API_KEY is configured
+        run: |
+          set -euo pipefail
+
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY secret is not configured. Add it in repository settings to enable Codex summaries." >&2
+            exit 1
+          fi
+        shell: bash
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -25,11 +38,12 @@ jobs:
 
       - name: Generate summary and comment
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUMBER: ${{ github.event.number }}
         run: |
+          set -euo pipefail
+
           npm install -g @openai/codex
 
           gh pr diff "$PR_NUMBER" > pr-diff.txt
@@ -42,3 +56,4 @@ PROMPT_EOF
           codex exec --full-auto -m o4-mini --color never --output-last-message codex-summary.md "$PROMPT"
 
           gh pr comment --body-file codex-summary.md "$PR_URL"
+        shell: bash
