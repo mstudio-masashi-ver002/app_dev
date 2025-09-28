@@ -22,38 +22,42 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Ensure OPENAI_API_KEY is configured
+        shell: bash
         run: |
           set -euo pipefail
-
           if [ -z "${OPENAI_API_KEY:-}" ]; then
             echo "::error::OPENAI_API_KEY secret is not configured. Add it in repository settings to enable Codex summaries." >&2
             exit 1
           fi
-        shell: bash
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 'latest'
+          node-version: 'lts/*'
 
       - name: Generate summary and comment
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_NUMBER: ${{ github.event.number }}
+        shell: bash
         run: |
           set -euo pipefail
 
           npm install -g @openai/codex
 
+          # 変更差分をファイル化
           gh pr diff "$PR_NUMBER" > pr-diff.txt
 
-          PROMPT="$(cat <<'PROMPT_EOF'
-プルリクエストの差分は `pr-diff.txt` に保存されています。このファイルを確認し、変更点を日本語で簡潔に要約してください。重要なポイントを箇条書きにし、必要に応じて確認事項やリスクがあれば最後に追記してください。結果は Markdown 形式で 80 文字程度を目安に改行し、最終メッセージでは要約のみを出力してください。
-PROMPT_EOF
-          )"
+          # Codexで日本語サマリを作成（ヒアドキュメントを使わず、素直に引数で渡す）
+          codex exec --full-auto -m o4-mini --color never \
+            --output-last-message codex-summary.md \
+            "次のファイル pr-diff.txt を読み、技術的変更点を日本語でMarkdown要約してください。
+            - 目的/背景（推測可）
+            - 主な変更点の箇条書き（ファイル/関数/設定）
+            - 破壊的変更や注意点（あれば）
+            - 確認手順（lint/build/test）
+            出力は1つのMarkdownとして出力し、余計な前置きは不要です。"
 
-          codex exec --full-auto -m o4-mini --color never --output-last-message codex-summary.md "$PROMPT"
-
+          # PRにコメント投稿
           gh pr comment --body-file codex-summary.md "$PR_URL"
-        shell: bash
