@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Project 1 – Task Manager
 
-## Getting Started
+シンプルなタスク管理アプリをベースに、Issueドリブンな自動開発フローを試せる Next.js プロジェクトです。
 
-First, run the development server:
+## 開発サーバーの起動
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`http://localhost:3000` を開くとアプリを確認できます。`src/app/page.tsx` を編集するとリアルタイムに反映されます。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Issueドリブン自動開発フロー
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+このリポジトリには、GitHub Actions と OpenAI Codex CLI を組み合わせた自動化ワークフローを用意しています。ポイントは次の 2 つです。
 
-## Learn More
+- `.github/workflows/issue-to-pr.yaml`
+  - Issue に `codex` ラベルが付くと起動。
+  - 新しいブランチを作成し、Issue タイトル・本文をプロンプト化して Codex CLI に渡します。
+  - Codex が生成した修正をコミットしてプッシュし、PR を自動作成します。
+- `.github/workflows/pr-summary.yaml`
+  - PR がオープンしたタイミングで起動。
+  - 差分を抽出して Codex CLI に要約させ、結果を `codex-summary.md` として PR コメントに投稿します。
 
-To learn more about Next.js, take a look at the following resources:
+### 事前準備
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. GitHub リポジトリに `codex` ラベルを作成してください。
+2. 以下のシークレットを設定してください。
+   - `OPENAI_API_KEY`: Codex CLI が利用する OpenAI API キー。
+   - `PAT_TOKEN` (任意): PR 作成時に利用する個人アクセストークン。未設定の場合は `GITHUB_TOKEN` を利用します。
+3. レポジトリの Actions を有効化し、Codex CLI が利用可能なプランであることを確認してください。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### ワークフローの流れ
 
-## Deploy on Vercel
+1. **Issue 作成**: 新しい Issue に `codex` ラベルを付けると、Issue の内容をもとに修正提案が自動ブランチとして生成され、PR が作成されます。
+2. **PR 要約**: PR が作成されると、差分の自動要約がコメントとして追加されるため、レビューの把握が容易になります。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## カスタマイズのヒント
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `.github/workflows/issue-to-pr.yaml` 内のプロンプト文章を編集すると、Codex への指示を調整できます。
+- `codex -m o4-mini` などモデル指定は必要に応じて変更可能です。
+- CI の最終確認コマンド（例: `npm ci && npm run build`）などを Issue に追記すると、Codex がその指示に従う可能性が高まります。
+
+## ライセンス
+
+このプロジェクトは学習目的のサンプルです。必要に応じて自由にカスタマイズしてください。
